@@ -54,9 +54,8 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
   def callback(conn, strategy) do
     with {:ok, session_key} <- session_key(strategy),
          {:ok, config} <- config_for(strategy),
-         session_params when is_map(session_params) <- get_session(conn, session_key, %{}),
          conn <- delete_session(conn, session_key),
-         config <- Config.put(config, :session_params, session_params),
+         config <- Config.put(config, :session_params, %{}),
          {:ok, %{user: user, token: token}} <-
            strategy.assent_strategy.callback(config, conn.params),
          action_opts <- action_opts(conn),
