@@ -35,11 +35,9 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
       {:redirect, base_url, full_domain} ->
         # Preserve query parameters in the redirect and add domain parameter
         query_params =
-          if conn.query_string && conn.query_string != "" do
-            "#{conn.query_string}&domain=#{full_domain}"
-          else
-            "domain=#{full_domain}"
-          end
+          conn.query_params
+          |> Map.put("domain", full_domain)
+          |> URI.encode_query()
 
         redirect_url = "#{base_url}#{conn.request_path}?#{query_params}"
 
