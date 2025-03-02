@@ -218,6 +218,7 @@ defmodule Example.User do
         authorization_params scope: "openid profile email"
         auth_method :client_secret_post
         identity_resource Example.UserIdentity
+        tenant_base_domain("myapp.com")
       end
 
       oauth2 :oauth2_without_identity do

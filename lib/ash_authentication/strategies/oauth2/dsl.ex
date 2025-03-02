@@ -172,6 +172,16 @@ defmodule AshAuthentication.Strategy.OAuth2.Dsl do
             " The name of an icon to use in any potential UI. This is a *hint* for UI generators to use, and not in any way canonical.",
           required: false,
           default: :oauth2
+        ],
+        tenant_base_domain: [
+          type: secret_type,
+          doc: """
+          The base domain to use for tenant redirection in multi-tenant applications.
+          When set, OAuth2 requests will be redirected to this domain instead of using domain part detection.
+          For example, if your app runs on 'tenant.example.com' but authentication should happen on 'example.com',
+          set this to 'example.com'. #{secret_doc}
+          """,
+          required: false
         ]
       ],
       deprecations: [site: "As of assent v0.2.8 please use `base_url` instead."],
