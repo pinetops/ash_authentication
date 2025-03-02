@@ -56,8 +56,8 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
 
             domain when is_binary(domain) ->
               if domain do
-                with {:ok, subject_name} <- Info.authentication_subject_name(strategy.resource) do
-                  put_session(conn, "#{subject_name}/oauth2_redirect_domain", domain)
+                with {:ok, session_key} <- session_key(strategy) do
+                  put_session(conn, "#{session_key}_redirect_domain", domain)
                 else
                   _ -> conn
                 end
@@ -133,6 +133,9 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
   Responds to a user being redirected back from the remote authentication
   provider, and validates the passed options, ultimately registering or
   signing-in a user if the authentication was successful.
+
+  If the authentication was initiated from a subdomain, it will redirect back
+  to that subdomain after successful authentication.
   """
   @spec callback(Conn.t(), OAuth2.t()) :: Conn.t()
   def callback(conn, strategy) do
@@ -150,7 +153,37 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
              %{user_info: user, oauth_tokens: token},
              action_opts
            ) do
-      store_authentication_result(conn, {:ok, user})
+      # Store the authentication result in the conn
+      conn = store_authentication_result(conn, {:ok, user})
+
+      # Check if we need to redirect back to a subdomain
+      case get_session(conn, "#{session_key}_redirect_domain") do
+        nil ->
+          # No subdomain redirect needed
+          conn
+
+        redirect_domain when is_binary(redirect_domain) ->
+          # Store any necessary data in the session for retrieval after redirect
+          # This could include user ID, tokens, or other authentication data
+          conn =
+            conn
+            |> put_session("authenticated_user_id", user.id)
+            |> put_session(
+              "authentication_timestamp",
+              DateTime.utc_now() |> DateTime.to_iso8601()
+            )
+            |> delete_session("#{session_key}_redirect_domain")
+
+          # Build the redirect URL to the original subdomain
+          scheme = conn.scheme |> to_string()
+          port_part = if conn.port in [80, 443], do: "", else: ":#{conn.port}"
+          redirect_url = "#{scheme}://#{redirect_domain}#{port_part}#{conn.request_path}"
+
+          # Redirect back to the original subdomain
+          conn
+          |> put_resp_header("location", redirect_url)
+          |> send_resp(:found, "Redirecting to #{redirect_domain}")
+      end
     else
       nil ->
         store_authentication_result(conn, {:error, nil})

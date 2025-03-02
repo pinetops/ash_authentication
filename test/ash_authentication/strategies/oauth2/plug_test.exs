@@ -168,6 +168,70 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
 
       # Check that the subdomain was stored in the session for the callback
       assert get_session(base_domain_conn, "user/oauth2_redirect_domain") == "tenant.myapp.com"
+
+      # Extract state from the redirect URL for the callback
+      uri = URI.parse(oauth_location)
+      query_params = URI.decode_query(uri.query || "")
+      state = query_params["state"]
+
+      # Mock the Assent callback function to return a successful result
+      expect(Assent.Strategy.OAuth2, :callback, fn _config,
+                                                   %{
+                                                     "code" => "test_auth_code",
+                                                     "state" => ^state
+                                                   } ->
+        {:ok,
+         %{
+           user: %{
+             "sub" => "12345",
+             "name" => "Test User",
+             "email" => "test@example.com"
+           },
+           token: %{
+             "access_token" => "mock_access_token",
+             "token_type" => "bearer",
+             "expires_in" => 3600
+           }
+         }}
+      end)
+
+      callback_conn =
+        :get
+        |> conn("/auth/oauth2/callback", %{"code" => "test_auth_code", "state" => state})
+        |> Map.put(:host, "myapp.com")
+        # Initialize the session
+        |> init_test_session(%{})
+        |> put_session("user/oauth2", session)
+        |> put_session("user/oauth2_redirect_domain", "tenant.myapp.com")
+        |> SessionPipeline.call([])
+        |> Plug.callback(strategy)
+
+      # Verify the callback response
+      # The callback should set a redirect to the original subdomain
+      assert callback_conn.status == 302
+
+      {"location", redirect_location} =
+        Enum.find(callback_conn.resp_headers, &(elem(&1, 0) == "location"))
+
+      redirect_uri = URI.parse(redirect_location)
+      assert redirect_uri.host == "tenant.myapp.com"
+
+      # Follow the redirect back to the tenant subdomain
+      tenant_conn = follow_redirect(callback_conn, SessionPipeline)
+
+      # Verify we're now on the tenant subdomain
+      assert tenant_conn.host == "tenant.myapp.com"
+
+      # Verify that the authentication result was properly transferred
+      # Check for the authenticated user ID in the session
+      assert get_session(tenant_conn, "authenticated_user_id") != nil
+
+      # Check for the authentication timestamp
+      assert get_session(tenant_conn, "authentication_timestamp") != nil
+
+      # Verify that the authentication result is stored in the connection
+      assert {:ok, user} = callback_conn.private.authentication_result
+      assert user.username == %Ash.CiString{string: "test@example.com"}
     end
   end
 end
