@@ -1,3 +1,4 @@
+Mimic.copy(AshAuthentication.Strategy.OAuth2)
 Mimic.copy(AshAuthentication.AddOn.Confirmation.Actions)
 Mimic.copy(AshAuthentication.AddOn.Confirmation.Plug)
 Mimic.copy(AshAuthentication.Plug.Defaults)

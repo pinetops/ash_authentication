@@ -1,8 +1,12 @@
 defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
   @moduledoc false
-  use DataCase, async: true
+  # Changed to async: false for Mimic
+  use DataCase, async: false
   import Plug.Conn
   import Plug.Test
+
+  # Setup Mimic for the modules we want to mock
+  use Mimic
 
   alias AshAuthentication.{Info, Strategy.OAuth2.Plug}
 
@@ -35,6 +39,9 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
       # Copy session data
       session = conn.private[:plug_session] || %{}
 
+      # Initialize the session before copying data
+      new_conn = init_test_session(new_conn, %{})
+
       new_conn =
         Enum.reduce(session, new_conn, fn {key, value}, acc ->
           put_session(acc, key, value)
@@ -51,7 +58,11 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
   end
 
   describe "request/2" do
-    test "it builds the redirect url and redirects the user" do
+    import Mimic
+
+    setup :verify_on_exit!
+
+    test "it builds the redirect url and redirects the user, then handles the callback" do
       {:ok, strategy} = Info.strategy(Example.User, :oauth2)
 
       assert conn =
@@ -66,6 +77,50 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
       assert String.starts_with?(location, "https://example.com/authorize?")
       session = get_session(conn, "user/oauth2")
       assert session.state =~ ~r/.+/
+
+      # Extract state from the redirect URL for the callback
+      uri = URI.parse(location)
+      query_params = URI.decode_query(uri.query || "")
+      state = query_params["state"]
+
+      # Mock the Assent callback function to return a successful result
+      expect(Assent.Strategy.OAuth2, :callback, fn _config,
+                                                   %{
+                                                     "code" => "test_auth_code",
+                                                     "state" => ^state
+                                                   } ->
+        {:ok,
+         %{
+           user: %{
+             "sub" => "12345",
+             "name" => "Test User",
+             "email" => "test@example.com"
+           },
+           token: %{
+             "access_token" => "mock_access_token",
+             "token_type" => "bearer",
+             "expires_in" => 3600
+           }
+         }}
+      end)
+
+      # Simulate the OAuth provider redirecting back to our callback endpoint
+      # with an authorization code and the state parameter
+      callback_conn =
+        :get
+        |> conn("/auth/oauth2/callback", %{"code" => "test_auth_code", "state" => state})
+        |> Map.put(:host, "myapp.com")
+        # Initialize the session
+        |> init_test_session(%{})
+        |> put_session("user/oauth2", session)
+        |> SessionPipeline.call([])
+        |> Plug.callback(strategy)
+
+      # Verify the callback response
+      # The OAuth2.Plug.callback function stores the authentication result in conn.private
+      # but doesn't set a redirect status - that would be handled by a router
+      assert {:ok, user} = callback_conn.private.authentication_result
+      assert user.username == %Ash.CiString{string: "test@example.com"}
     end
 
     test "it redirects from subdomain.myapp.com to myapp.com with subdomain as query param" do
