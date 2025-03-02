@@ -28,7 +28,7 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
       {:ok, strategy} = Info.strategy(Example.User, :oauth2)
 
       # Create a connection with a subdomain host
-      assert conn =
+      assert subdomain_conn =
                :get
                |> conn("/", %{})
                |> Map.put(:host, "tenant.myapp.com")
@@ -36,8 +36,10 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
                |> SessionPipeline.call([])
                |> Plug.request(strategy)
 
-      assert conn.status == 302
-      assert {"location", location} = Enum.find(conn.resp_headers, &(elem(&1, 0) == "location"))
+      assert subdomain_conn.status == 302
+
+      assert {"location", location} =
+               Enum.find(subdomain_conn.resp_headers, &(elem(&1, 0) == "location"))
 
       # Check that the location is now pointing to myapp.com (not subdomain)
       uri = URI.parse(location)
@@ -49,8 +51,29 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
       assert Map.has_key?(query_params, "domain")
       assert query_params["domain"] == "tenant.myapp.com"
 
+      # Now make a request to the base domain with the domain parameter
+      assert base_domain_conn =
+               :get
+               |> conn(uri.path, %{"domain" => "tenant.myapp.com"})
+               |> Map.put(:host, "myapp.com")
+               |> Map.put(:port, 4000)
+               |> SessionPipeline.call([])
+               |> Plug.request(strategy)
+
+      # Check that this redirects to the OAuth provider
+      assert base_domain_conn.status == 302
+
+      assert {"location", oauth_location} =
+               Enum.find(base_domain_conn.resp_headers, &(elem(&1, 0) == "location"))
+
+      assert String.starts_with?(oauth_location, "https://example.com/authorize?")
+
+      # Check that the session contains the OAuth state
+      session = get_session(base_domain_conn, "user/oauth2")
+      assert session.state =~ ~r/.+/
+
       # Check that the subdomain was stored in the session for the callback
-      assert get_session(conn, "user/oauth2_redirect_subdomain") == "tenant"
+      assert get_session(base_domain_conn, "user/oauth2_redirect_domain") == "tenant.myapp.com"
     end
   end
 end

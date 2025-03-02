@@ -48,6 +48,27 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
         |> send_resp(:found, "Redirecting to base domain")
 
       :no_redirect ->
+        # Store the subdomain in the session if domain parameter is present
+        conn =
+          case conn.params["domain"] do
+            nil ->
+              conn
+
+            domain when is_binary(domain) ->
+              if domain do
+                with {:ok, subject_name} <- Info.authentication_subject_name(strategy.resource) do
+                  put_session(conn, "#{subject_name}/oauth2_redirect_domain", domain)
+                else
+                  _ -> conn
+                end
+              else
+                conn
+              end
+
+            _ ->
+              conn
+          end
+
         with {:ok, config} <- config_for(strategy),
              {:ok, config} <- maybe_add_nonce(config, strategy),
              {:ok, session_key} <- session_key(strategy),
