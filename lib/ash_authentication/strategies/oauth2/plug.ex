@@ -86,43 +86,38 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
   defp should_redirect_to_base_domain?(conn, strategy) do
     host = conn.host
 
-    # First try to get tenant_base_domain from strategy if provided
-    with %OAuth2{} <- strategy,
-         {:ok, tenant_base_domain} when is_binary(tenant_base_domain) and tenant_base_domain != "" <-
-           fetch_secret(strategy, :tenant_base_domain) do
-      # If the current host is not the tenant base domain, redirect
-      if host != tenant_base_domain do
-        scheme = conn.scheme |> to_string()
-        port_part = if conn.port in [80, 443], do: "", else: ":#{conn.port}"
-        base_url = "#{scheme}://#{tenant_base_domain}#{port_part}"
-
-        # Return the full domain for the domain parameter
-        full_domain = host
-
-        {:redirect, base_url, full_domain}
-      else
-        :no_redirect
-      end
-    else
-      # Fall back to the original domain-parts based logic if no tenant_base_domain configured
-      _ ->
-        parts = String.split(host, ".")
-
-        if length(parts) >= 3 do
-          # We're on a subdomain, construct the base domain URL
-          base_domain = Enum.join(Enum.drop(parts, 1), ".")
-          scheme = conn.scheme |> to_string()
-          port_part = if conn.port in [80, 443], do: "", else: ":#{conn.port}"
-          base_url = "#{scheme}://#{base_domain}#{port_part}"
-
-          # Return the full domain (including subdomain) for the domain parameter
-          full_domain = host
-
-          {:redirect, base_url, full_domain}
+    # Get tenant_base_domain from strategy if provided
+    case fetch_tenant_base_domain(strategy) do
+      {:ok, tenant_base_domain} ->
+        # If the current host is not the tenant base domain, redirect
+        if host != tenant_base_domain do
+          base_url = build_url_from_host(conn, tenant_base_domain)
+          {:redirect, base_url, host}
         else
           :no_redirect
         end
+
+      :error ->
+        :no_redirect
     end
+  end
+
+  # Fetches the tenant_base_domain from strategy
+  defp fetch_tenant_base_domain(strategy) do
+    with %OAuth2{} <- strategy,
+         {:ok, domain} when is_binary(domain) and domain != "" <-
+           fetch_secret(strategy, :tenant_base_domain) do
+      {:ok, domain}
+    else
+      _ -> :error
+    end
+  end
+
+  # Builds a URL from connection and host
+  defp build_url_from_host(conn, host) do
+    scheme = conn.scheme |> to_string()
+    port_part = if conn.port in [80, 443], do: "", else: ":#{conn.port}"
+    "#{scheme}://#{host}#{port_part}"
   end
 
   @doc """
