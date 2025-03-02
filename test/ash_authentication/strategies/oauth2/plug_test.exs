@@ -13,6 +13,7 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
       assert conn =
                :get
                |> conn("/", %{})
+               |> Map.put(:host, "myapp.com")
                |> SessionPipeline.call([])
                |> Plug.request(strategy)
 
@@ -21,6 +22,35 @@ defmodule AshAuthentication.Strategy.OAuth2.PlugTest do
       assert String.starts_with?(location, "https://example.com/authorize?")
       session = get_session(conn, "user/oauth2")
       assert session.state =~ ~r/.+/
+    end
+
+    test "it redirects from subdomain.myapp.com to myapp.com with subdomain as query param" do
+      {:ok, strategy} = Info.strategy(Example.User, :oauth2)
+
+      # Create a connection with a subdomain host
+      assert conn =
+               :get
+               |> conn("/", %{})
+               |> Map.put(:host, "tenant.myapp.com")
+               |> Map.put(:port, 4000)
+               |> SessionPipeline.call([])
+               |> Plug.request(strategy)
+
+      assert conn.status == 302
+      assert {"location", location} = Enum.find(conn.resp_headers, &(elem(&1, 0) == "location"))
+
+      # Check that the location is now pointing to myapp.com (not subdomain)
+      uri = URI.parse(location)
+      assert uri.host == "myapp.com"
+      assert uri.port == 4000
+
+      # Check that the subdomain was added as a query parameter
+      query_params = URI.decode_query(uri.query || "")
+      assert Map.has_key?(query_params, "domain")
+      assert query_params["domain"] == "tenant.myapp.com"
+
+      # Check that the subdomain was stored in the session for the callback
+      assert get_session(conn, "user/oauth2_redirect_subdomain") == "tenant"
     end
   end
 end

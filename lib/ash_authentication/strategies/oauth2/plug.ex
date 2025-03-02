@@ -24,21 +24,63 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
 
   Builds a redirection URL based on the provider configuration and redirects the
   user to that endpoint.
+
+  If the request is coming from a subdomain, it will be redirected to the base domain.
   """
   @spec request(Conn.t(), OAuth2.t()) :: Conn.t()
   # sobelow_skip ["XSS.SendResp"]
   def request(conn, strategy) do
-    with {:ok, config} <- config_for(strategy),
-         {:ok, config} <- maybe_add_nonce(config, strategy),
-         {:ok, session_key} <- session_key(strategy),
-         {:ok, %{session_params: session_params, url: url}} <-
-           strategy.assent_strategy.authorize_url(config) do
-      conn
-      |> put_session(session_key, session_params)
-      |> put_resp_header("location", url)
-      |> send_resp(:found, "Redirecting to #{strategy.name}")
+    # Check if we need to redirect from subdomain to base domain
+    case should_redirect_to_base_domain?(conn) do
+      {:redirect, base_url, full_domain} ->
+        # Preserve query parameters in the redirect and add domain parameter
+        query_params =
+          if conn.query_string && conn.query_string != "" do
+            "#{conn.query_string}&domain=#{full_domain}"
+          else
+            "domain=#{full_domain}"
+          end
+
+        redirect_url = "#{base_url}#{conn.request_path}?#{query_params}"
+
+        conn
+        |> put_resp_header("location", redirect_url)
+        |> send_resp(:found, "Redirecting to base domain")
+
+      :no_redirect ->
+        with {:ok, config} <- config_for(strategy),
+             {:ok, config} <- maybe_add_nonce(config, strategy),
+             {:ok, session_key} <- session_key(strategy),
+             {:ok, %{session_params: session_params, url: url}} <-
+               strategy.assent_strategy.authorize_url(config) do
+          conn
+          |> put_session(session_key, session_params)
+          |> put_resp_header("location", url)
+          |> send_resp(:found, "Redirecting to #{strategy.name}")
+        else
+          {:error, reason} -> store_authentication_result(conn, {:error, reason})
+        end
+    end
+  end
+
+  # Determines if we should redirect from a subdomain to the base domain
+  defp should_redirect_to_base_domain?(conn) do
+    host = conn.host
+    parts = String.split(host, ".")
+
+    if length(parts) >= 3 do
+      # We're on a subdomain, construct the base domain URL
+      base_domain = Enum.join(Enum.drop(parts, 1), ".")
+      scheme = conn.scheme |> to_string()
+      port_part = if conn.port in [80, 443], do: "", else: ":#{conn.port}"
+      base_url = "#{scheme}://#{base_domain}#{port_part}"
+
+      # Return the full domain (including subdomain) for the domain parameter
+      full_domain = host
+
+      {:redirect, base_url, full_domain}
     else
-      {:error, reason} -> store_authentication_result(conn, {:error, reason})
+      :no_redirect
     end
   end
 
