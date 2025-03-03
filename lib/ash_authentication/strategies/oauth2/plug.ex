@@ -30,58 +30,68 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
   @spec request(Conn.t(), OAuth2.t()) :: Conn.t()
   # sobelow_skip ["XSS.SendResp"]
   def request(conn, strategy) do
-    # Check if we need to redirect from subdomain to base domain
-    if should_redirect_to_base_domain?(conn, strategy) do
-      # Get the tenant base domain for redirection
-      {:ok, tenant_base_domain} = fetch_tenant_base_domain(strategy)
-      base_url = build_url_from_host(conn, tenant_base_domain)
-      full_domain = conn.host
+    cond do
+      should_redirect_to_base_domain?(conn, strategy) ->
+        redirect_to_base_domain(conn, strategy)
 
-      # Preserve query parameters in the redirect and add domain parameter
-      query_params =
-        conn.query_params
-        |> Map.put("domain", full_domain)
-        |> URI.encode_query()
+      true ->
+        conn
+        |> maybe_store_domain_param(strategy)
+        |> perform_oauth_request(strategy)
+    end
+  end
 
-      redirect_url = "#{base_url}#{conn.request_path}?#{query_params}"
+  # Redirects from subdomain to base domain
+  defp redirect_to_base_domain(conn, strategy) do
+    {:ok, tenant_base_domain} = fetch_tenant_base_domain(strategy)
+    base_url = build_url_from_host(conn, tenant_base_domain)
+    full_domain = conn.host
 
-      conn
-      |> put_resp_header("location", redirect_url)
-      |> send_resp(:found, "Redirecting to base domain")
-    else
-      # Store the subdomain in the session if domain parameter is present
-      conn =
-        case conn.params["domain"] do
-          nil ->
-            conn
+    redirect_url = build_redirect_url(conn, base_url, full_domain)
 
-          domain when is_binary(domain) ->
-            if domain do
-              with {:ok, session_key} <- session_key(strategy) do
-                put_session(conn, "#{session_key}_redirect_domain", domain)
-              else
-                _ -> conn
-              end
-            else
-              conn
-            end
+    conn
+    |> put_resp_header("location", redirect_url)
+    |> send_resp(:found, "Redirecting to base domain")
+  end
 
-          _ ->
-            conn
+  # Builds a redirect URL with preserved query parameters
+  defp build_redirect_url(conn, base_url, domain) do
+    query_params =
+      conn.query_params
+      |> Map.put("domain", domain)
+      |> URI.encode_query()
+
+    "#{base_url}#{conn.request_path}?#{query_params}"
+  end
+
+  # Stores the domain parameter in the session if present
+  defp maybe_store_domain_param(conn, strategy) do
+    case conn.params["domain"] do
+      domain when is_binary(domain) and domain != "" ->
+        with {:ok, session_key} <- session_key(strategy) do
+          put_session(conn, "#{session_key}_redirect_domain", domain)
+        else
+          _ -> conn
         end
 
-      with {:ok, config} <- config_for(strategy),
-           {:ok, config} <- maybe_add_nonce(config, strategy),
-           {:ok, session_key} <- session_key(strategy),
-           {:ok, %{session_params: session_params, url: url}} <-
-             strategy.assent_strategy.authorize_url(config) do
+      _ ->
         conn
-        |> put_session(session_key, session_params)
-        |> put_resp_header("location", url)
-        |> send_resp(:found, "Redirecting to #{strategy.name}")
-      else
-        {:error, reason} -> store_authentication_result(conn, {:error, reason})
-      end
+    end
+  end
+
+  # Performs the actual OAuth request
+  defp perform_oauth_request(conn, strategy) do
+    with {:ok, config} <- config_for(strategy),
+         {:ok, config} <- maybe_add_nonce(config, strategy),
+         {:ok, session_key} <- session_key(strategy),
+         {:ok, %{session_params: session_params, url: url}} <-
+           strategy.assent_strategy.authorize_url(config) do
+      conn
+      |> put_session(session_key, session_params)
+      |> put_resp_header("location", url)
+      |> send_resp(:found, "Redirecting to #{strategy.name}")
+    else
+      {:error, reason} -> store_authentication_result(conn, {:error, reason})
     end
   end
 
