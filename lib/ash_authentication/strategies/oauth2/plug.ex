@@ -31,74 +31,73 @@ defmodule AshAuthentication.Strategy.OAuth2.Plug do
   # sobelow_skip ["XSS.SendResp"]
   def request(conn, strategy) do
     # Check if we need to redirect from subdomain to base domain
-    case should_redirect_to_base_domain?(conn, strategy) do
-      {:redirect, base_url, full_domain} ->
-        # Preserve query parameters in the redirect and add domain parameter
-        query_params =
-          conn.query_params
-          |> Map.put("domain", full_domain)
-          |> URI.encode_query()
+    if should_redirect_to_base_domain?(conn, strategy) do
+      # Get the tenant base domain for redirection
+      {:ok, tenant_base_domain} = fetch_tenant_base_domain(strategy)
+      base_url = build_url_from_host(conn, tenant_base_domain)
+      full_domain = conn.host
 
-        redirect_url = "#{base_url}#{conn.request_path}?#{query_params}"
+      # Preserve query parameters in the redirect and add domain parameter
+      query_params =
+        conn.query_params
+        |> Map.put("domain", full_domain)
+        |> URI.encode_query()
 
-        conn
-        |> put_resp_header("location", redirect_url)
-        |> send_resp(:found, "Redirecting to base domain")
+      redirect_url = "#{base_url}#{conn.request_path}?#{query_params}"
 
-      :no_redirect ->
-        # Store the subdomain in the session if domain parameter is present
-        conn =
-          case conn.params["domain"] do
-            nil ->
-              conn
+      conn
+      |> put_resp_header("location", redirect_url)
+      |> send_resp(:found, "Redirecting to base domain")
+    else
+      # Store the subdomain in the session if domain parameter is present
+      conn =
+        case conn.params["domain"] do
+          nil ->
+            conn
 
-            domain when is_binary(domain) ->
-              if domain do
-                with {:ok, session_key} <- session_key(strategy) do
-                  put_session(conn, "#{session_key}_redirect_domain", domain)
-                else
-                  _ -> conn
-                end
+          domain when is_binary(domain) ->
+            if domain do
+              with {:ok, session_key} <- session_key(strategy) do
+                put_session(conn, "#{session_key}_redirect_domain", domain)
               else
-                conn
+                _ -> conn
               end
-
-            _ ->
+            else
               conn
-          end
+            end
 
-        with {:ok, config} <- config_for(strategy),
-             {:ok, config} <- maybe_add_nonce(config, strategy),
-             {:ok, session_key} <- session_key(strategy),
-             {:ok, %{session_params: session_params, url: url}} <-
-               strategy.assent_strategy.authorize_url(config) do
-          conn
-          |> put_session(session_key, session_params)
-          |> put_resp_header("location", url)
-          |> send_resp(:found, "Redirecting to #{strategy.name}")
-        else
-          {:error, reason} -> store_authentication_result(conn, {:error, reason})
+          _ ->
+            conn
         end
+
+      with {:ok, config} <- config_for(strategy),
+           {:ok, config} <- maybe_add_nonce(config, strategy),
+           {:ok, session_key} <- session_key(strategy),
+           {:ok, %{session_params: session_params, url: url}} <-
+             strategy.assent_strategy.authorize_url(config) do
+        conn
+        |> put_session(session_key, session_params)
+        |> put_resp_header("location", url)
+        |> send_resp(:found, "Redirecting to #{strategy.name}")
+      else
+        {:error, reason} -> store_authentication_result(conn, {:error, reason})
+      end
     end
   end
 
   # Determines if we should redirect from a subdomain to the base domain
+  @spec should_redirect_to_base_domain?(Conn.t(), OAuth2.t()) :: boolean()
   defp should_redirect_to_base_domain?(conn, strategy) do
     host = conn.host
 
     # Get tenant_base_domain from strategy if provided
     case fetch_tenant_base_domain(strategy) do
       {:ok, tenant_base_domain} ->
-        # If the current host is not the tenant base domain, redirect
-        if host != tenant_base_domain do
-          base_url = build_url_from_host(conn, tenant_base_domain)
-          {:redirect, base_url, host}
-        else
-          :no_redirect
-        end
+        # Return true if the current host is not the tenant base domain
+        host != tenant_base_domain
 
       :error ->
-        :no_redirect
+        false
     end
   end
 
